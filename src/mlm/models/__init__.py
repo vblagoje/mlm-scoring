@@ -7,8 +7,13 @@ import gluonnlp as nlp
 import mxnet as mx
 # PyTorch-based
 import transformers
+import torch
+from transformers import BertModel, BertConfig
 from gluonnlp.model import get_model as _get_model
 from mxnet.gluon import Block
+
+from pytorch_block_sparse import BlockSparseModelPatcher
+
 
 from .bert import BERTRegression, AlbertForMaskedLMOptimized, BertForMaskedLMOptimized, DistilBertForMaskedLMOptimized
 from .gpt2 import gpt2_117m, gpt2_345m
@@ -88,6 +93,24 @@ SUPPORTED = SUPPORTED_MLMS + SUPPORTED_LMS
 def get_pretrained(ctxs: List[mx.Context], name: str = 'bert-base-uncased',
                    cased: bool = False, finetune: bool = False, regression: bool = False, freeze: int = 0,
                    root: Optional[Path] = None) -> Tuple[Block, nlp.Vocab, nlp.data.BERTTokenizer]:
-    model, loading_info = BertForMaskedLMOptimized.from_pretrained(name, output_loading_info=True)
+
+    model = sparsify_and_load(name)
+    model.save_pretrained("./tmp")
+    model = BertForMaskedLMOptimized.from_pretrained("./tmp")
     tokenizer = transformers.BertTokenizer.from_pretrained(name)
     return model, None, tokenizer
+
+
+def sparsify_and_load(name: str = 'bert-base-uncased', lh=(4, 256), density=0.5):
+
+    config = BertConfig(hidden_size=lh[1], num_attention_heads=int(lh[1] / 64),
+                        num_hidden_layers=lh[0], intermediate_size=4 * lh[1])
+
+    model = BertModel(config)
+    mp = BlockSparseModelPatcher()
+    mp.add_pattern("bert\.encoder\.layer\.[0-9]+\.intermediate\.dense", {"density": density})
+    mp.add_pattern("bert\.encoder\.layer\.[0-9]+\.output\.dense", {"density": density})
+    mp.patch_model(model.cuda())
+
+    model.load_state_dict(torch.load(name))
+    return model
